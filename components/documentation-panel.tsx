@@ -181,7 +181,7 @@ export function DocumentationPanel() {
                   </li>
                   <li>
                     <a
-                      href="https://github.com/yourusername/defipass"
+                      href="https://github.com/codeAKstan/defipass"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex items-center text-blue-500 hover:underline"
@@ -193,7 +193,7 @@ export function DocumentationPanel() {
                 </ul>
               </div>
 
-              <div className="space-y-2">
+              {/* <div className="space-y-2">
                 <h3 className="text-lg font-medium">Submission Details</h3>
                 <p>This project was created for the LazorKit Hackathon. To submit your own project:</p>
                 <ul className="list-disc pl-5">
@@ -220,7 +220,7 @@ export function DocumentationPanel() {
                     </a>
                   </li>
                 </ul>
-              </div>
+              </div> */}
             </TabsContent>
 
             <TabsContent value="about" className="space-y-4">
