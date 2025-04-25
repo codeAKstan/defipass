@@ -8,12 +8,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { ArrowDown, RefreshCw, AlertCircle } from "lucide-react"
+import { ArrowDown, RefreshCw, AlertCircle, RotateCw } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { fetchTokens, fetchQuote, executeSwap } from "@/lib/jupiter"
+import { fetchTokens, fetchQuote, executeSwap, verifySignature } from "@/lib/jupiter"
 import type { TokenInfo } from "@/types/token"
 
-export function SwapInterface() {
+export function SwapInterface({ setError }: { setError: (error: string | null) => void }) {
   const { publicKey, signMessage } = useWallet()
   const [tokens, setTokens] = useState<TokenInfo[]>([])
   const [loading, setLoading] = useState(true)
@@ -22,34 +22,56 @@ export function SwapInterface() {
   const [fromAmount, setFromAmount] = useState<string>("0.1")
   const [toAmount, setToAmount] = useState<string>("0")
   const [swapping, setSwapping] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [quoteLoading, setQuoteLoading] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [tokenMap, setTokenMap] = useState<Map<string, TokenInfo>>(new Map())
+  const [loadingTokens, setLoadingTokens] = useState(false)
 
   // Fetch tokens on component mount
-  useEffect(() => {
-    const getTokens = async () => {
-      try {
-        setLoading(true)
-        const tokenList = await fetchTokens()
-        setTokens(tokenList)
+  const fetchTokenList = async () => {
+    try {
+      setLoadingTokens(true)
+      setLoading(true)
+      setLocalError(null)
 
-        // Set default tokens (SOL and USDC)
-        const sol = tokenList.find((t) => t.symbol === "SOL")
-        const usdc = tokenList.find((t) => t.symbol === "USDC")
+      console.log("Fetching token list...")
+      const tokenList = await fetchTokens()
 
-        if (sol) setFromToken(sol.address)
-        if (usdc) setToToken(usdc.address)
-
-        setLoading(false)
-      } catch (error) {
-        console.error("Failed to fetch tokens:", error)
-        setError("Failed to load tokens. Please try again.")
-        setLoading(false)
+      if (tokenList.length === 0) {
+        throw new Error("No tokens returned from API")
       }
-    }
 
-    getTokens()
-  }, [])
+      setTokens(tokenList)
+
+      // Create a map for quick lookups
+      const map = new Map<string, TokenInfo>()
+      tokenList.forEach((token) => {
+        map.set(token.address, token)
+      })
+      setTokenMap(map)
+
+      // Set default tokens (SOL and USDC)
+      const sol = tokenList.find((t) => t.symbol === "SOL")
+      const usdc = tokenList.find((t) => t.symbol === "USDC")
+
+      if (sol) setFromToken(sol.address)
+      if (usdc) setToToken(usdc.address)
+
+      setLoading(false)
+      setLoadingTokens(false)
+    } catch (error) {
+      console.error("Failed to fetch tokens:", error)
+      setLocalError("Failed to load tokens. Please try again.")
+      setError("Failed to load tokens. Please try again.")
+      setLoading(false)
+      setLoadingTokens(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchTokenList()
+  }, [setError])
 
   // Get quote when inputs change
   useEffect(() => {
@@ -60,7 +82,10 @@ export function SwapInterface() {
       }
 
       try {
-        setError(null)
+        setQuoteLoading(true)
+        setLocalError(null)
+
+        console.log("Fetching quote for swap...")
         const quote = await fetchQuote({
           inputMint: fromToken,
           outputMint: toToken,
@@ -71,13 +96,23 @@ export function SwapInterface() {
         if (quote) {
           setToAmount(quote.outAmount.toString())
         }
+
+        setQuoteLoading(false)
       } catch (error) {
         console.error("Failed to fetch quote:", error)
-        setError("Failed to get swap quote. Please try different tokens or amount.")
+        setLocalError("Failed to get swap quote. Please try different tokens or amount.")
+        setQuoteLoading(false)
       }
     }
 
-    getQuote()
+    // Debounce the quote request
+    const timeoutId = setTimeout(() => {
+      if (fromToken && toToken && fromAmount && Number.parseFloat(fromAmount) > 0) {
+        getQuote()
+      }
+    }, 500)
+
+    return () => clearTimeout(timeoutId)
   }, [fromToken, toToken, fromAmount])
 
   const handleSwapTokens = () => {
@@ -93,9 +128,11 @@ export function SwapInterface() {
 
     try {
       setSwapping(true)
-      setError(null)
+      setLocalError(null)
       setSuccess(null)
+      setError(null)
 
+      console.log("Executing swap...")
       // Execute the swap
       const { txid, message } = await executeSwap({
         wallet: publicKey,
@@ -107,38 +144,58 @@ export function SwapInterface() {
 
       // Sign the transaction with passkey
       if (message) {
-        const signature = await signMessage(new Uint8Array(Buffer.from(message, "base64")))
-        console.log("Transaction signed:", signature)
+        console.log("Requesting signature for transaction...")
+        const messageBytes = new Uint8Array(Buffer.from(message, "base64"))
+        const signature = await signMessage(messageBytes)
+        console.log("Transaction signed successfully")
 
-        // Here you would normally send the signature to your backend
-        // which would then verify it using the on-chain program
+        // Verify the signature on-chain
+        console.log("Verifying signature on-chain...")
+        const verified = await verifySignature(signature, message, publicKey)
 
-        setSuccess(`Swap successful! Transaction ID: ${txid}`)
+        if (verified) {
+          console.log("Signature verified successfully")
+          setSuccess(`Swap successful! Transaction ID: ${txid}`)
+        } else {
+          throw new Error("Signature verification failed")
+        }
       }
     } catch (error) {
       console.error("Swap failed:", error)
-      setError("Swap failed. Please try again.")
+      setLocalError(`Swap failed: ${error instanceof Error ? error.message : "Unknown error"}`)
+      setError(`Swap failed: ${error instanceof Error ? error.message : "Unknown error"}`)
     } finally {
       setSwapping(false)
     }
   }
 
   const getTokenByAddress = (address: string) => {
-    return tokens.find((t) => t.address === address)
+    return tokenMap.get(address)
   }
 
   return (
     <Card className="max-w-md mx-auto">
-      <CardHeader>
-        <CardTitle>Swap Tokens</CardTitle>
-        <CardDescription>Powered by Jupiter Exchange</CardDescription>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle>Swap Tokens</CardTitle>
+          <CardDescription>Powered by Jupiter Exchange</CardDescription>
+        </div>
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={fetchTokenList}
+          disabled={loadingTokens}
+          title="Refresh token list"
+        >
+          <RotateCw className={`h-4 w-4 ${loadingTokens ? "animate-spin" : ""}`} />
+        </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {error && (
+        {localError && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Error</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
+            <AlertDescription>{localError}</AlertDescription>
           </Alert>
         )}
 
@@ -176,6 +233,13 @@ export function SwapInterface() {
                     <Skeleton className="h-4 w-full mb-2" />
                     <Skeleton className="h-4 w-full" />
                   </div>
+                ) : tokens.length === 0 ? (
+                  <div className="p-2 text-center">
+                    <p className="text-sm text-muted-foreground mb-2">No tokens available</p>
+                    <Button size="sm" onClick={fetchTokenList} className="w-full">
+                      Retry
+                    </Button>
+                  </div>
                 ) : (
                   tokens.map((token) => (
                     <SelectItem key={token.address} value={token.address}>
@@ -201,7 +265,14 @@ export function SwapInterface() {
           </div>
           <div className="flex space-x-2">
             <div className="flex-1">
-              <Input id="toAmount" type="text" value={toAmount} readOnly placeholder="0.0" disabled />
+              <Input
+                id="toAmount"
+                type="text"
+                value={quoteLoading ? "Loading..." : toAmount}
+                readOnly
+                placeholder="0.0"
+                disabled
+              />
             </div>
             <Select value={toToken} onValueChange={setToToken} disabled={loading || swapping}>
               <SelectTrigger className="w-[160px]">
@@ -213,6 +284,13 @@ export function SwapInterface() {
                     <Skeleton className="h-4 w-full mb-2" />
                     <Skeleton className="h-4 w-full mb-2" />
                     <Skeleton className="h-4 w-full" />
+                  </div>
+                ) : tokens.length === 0 ? (
+                  <div className="p-2 text-center">
+                    <p className="text-sm text-muted-foreground mb-2">No tokens available</p>
+                    <Button size="sm" onClick={fetchTokenList} className="w-full">
+                      Retry
+                    </Button>
                   </div>
                 ) : (
                   tokens.map((token) => (
@@ -232,7 +310,9 @@ export function SwapInterface() {
               <span>Rate</span>
               <span>
                 {Number.parseFloat(fromAmount) > 0 && Number.parseFloat(toAmount) > 0
-                  ? `1 ${getTokenByAddress(fromToken)?.symbol} ≈ ${(Number.parseFloat(toAmount) / Number.parseFloat(fromAmount)).toFixed(6)} ${getTokenByAddress(toToken)?.symbol}`
+                  ? `1 ${getTokenByAddress(fromToken)?.symbol || ""} ≈ ${(
+                      Number.parseFloat(toAmount) / Number.parseFloat(fromAmount)
+                    ).toFixed(6)} ${getTokenByAddress(toToken)?.symbol || ""}`
                   : "Enter an amount"}
               </span>
             </div>
